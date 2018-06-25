@@ -1,8 +1,26 @@
 package raft
 
+import (
+	"fmt"
+	"strings"
+)
+
 type Term int64
 type LogIndex int64
 type LogData []byte
+
+func (d LogData) String() string {
+	var sb strings.Builder
+	sb.WriteByte('[')
+	for i, b := range d {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(fmt.Sprintf("%02x", b))
+	}
+	sb.WriteByte(']')
+	return sb.String()
+}
 
 type RaftInstance interface {
 	ID() int
@@ -26,7 +44,7 @@ type AppendEntriesMessage struct {
 	//prevLogTerm Term of prevLogIndex entry
 	prevLogTerm Term
 	//entries[] log entries to store (empty for heartbeat; may send more than one for efficiency)
-	entries []Log
+	entries []*Log
 	//leaderCommit leader’s commitIndex
 	leaderCommit LogIndex
 }
@@ -36,6 +54,12 @@ func (m *AppendEntriesMessage) Term() Term {
 }
 
 type AppendEntriesACKMessage struct {
+	term    Term
+	success bool
+}
+
+func (m *AppendEntriesACKMessage) Term() Term {
+	return m.term
 }
 
 type RequestVoteMessage struct {
@@ -63,6 +87,7 @@ func (m *RequestVoteACKMessage) Term() Term {
 }
 
 type Log struct {
-	term     Term
-	logIndex LogIndex
+	term  Term
+	index LogIndex
+	data  LogData
 }

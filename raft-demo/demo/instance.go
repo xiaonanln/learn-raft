@@ -3,8 +3,6 @@ package demo
 import (
 	"context"
 	"fmt"
-	"log"
-
 	"time"
 
 	"sync"
@@ -33,7 +31,7 @@ func init() {
 
 func inputLogRoutine() {
 	for {
-		time.Sleep(time.Second)
+		time.Sleep(time.Millisecond * 200)
 		// choose a random instance to input
 
 		instancesLock.RLock()
@@ -45,7 +43,7 @@ func inputLogRoutine() {
 			}
 			randomData := []byte(strconv.Itoa(rand.Intn(1000)))
 			inslist[rand.Intn(len(inslist))].logInputChan <- randomData
-			log.Printf("INPUT >>> %s", string(randomData))
+			//log.Printf("INPUT >>> %s", string(randomData))
 		}
 
 		instancesLock.RUnlock()
@@ -86,7 +84,7 @@ func (ins *DemoRaftInstance) Send(insID int, msg raft.RPCMessage) {
 
 // Broadcast sends message to all other instances
 func (ins *DemoRaftInstance) Broadcast(msg raft.RPCMessage) {
-	log.Printf("%s BROADCAST: %+v", ins, msg)
+	//log.Printf("%s BROADCAST: %+v", ins, msg)
 	instancesLock.RLock()
 	defer instancesLock.RUnlock()
 	for _, other := range instances {
