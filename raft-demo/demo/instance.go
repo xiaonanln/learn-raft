@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+
+	"github.com/xiaonanln/learn-raft/raft"
 )
 
 type DemoRaftInstance struct {
 	ctx      context.Context
 	id       int
-	recvChan chan interface{}
+	recvChan chan raft.RPCMessage
 }
 
 var (
@@ -20,7 +22,7 @@ func NewDemoRaftInstance(ctx context.Context, id int) *DemoRaftInstance {
 	ins := &DemoRaftInstance{
 		ctx:      ctx,
 		id:       id,
-		recvChan: make(chan interface{}, 1000),
+		recvChan: make(chan raft.RPCMessage, 1000),
 	}
 
 	instances[id] = ins
@@ -34,18 +36,22 @@ func (ins *DemoRaftInstance) ID() int {
 	return ins.id
 }
 
-func (ins *DemoRaftInstance) Recv() <-chan interface{} {
+func (ins *DemoRaftInstance) Recv() <-chan raft.RPCMessage {
 	return ins.recvChan
 }
 
+func (ins *DemoRaftInstance) Send(insID int, msg raft.RPCMessage) {
+	instances[insID].recvChan <- msg
+}
+
 // Broadcast sends message to all other instances
-func (ins *DemoRaftInstance) Broadcast(msg interface{}) {
+func (ins *DemoRaftInstance) Broadcast(msg raft.RPCMessage) {
 	log.Printf("%s BROADCAST: %+v", ins, msg)
 	for _, other := range instances {
 		if other == ins {
 			continue
 		}
 
-		ins.recvChan <- msg
+		other.recvChan <- msg
 	}
 }
