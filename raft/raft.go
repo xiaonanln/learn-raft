@@ -23,7 +23,7 @@ const (
 const (
 	electionTimeout                = time.Millisecond * 3000
 	maxStartElectionDelay          = electionTimeout / 2
-	leaderAppendEntriesRPCInterval = time.Millisecond * 10
+	leaderAppendEntriesRPCInterval = time.Millisecond * 50
 )
 
 type Raft struct {
@@ -137,6 +137,8 @@ func (r *Raft) handleMsg(_msg RPCMessage) {
 	}
 
 	switch msg := _msg.(type) {
+	case *AppendEntriesACKMessage:
+		//log.Printf("AppendEntries ACK: %+v", msg)
 	case *AppendEntriesMessage:
 		r.handleAppendEntries(msg)
 	case *RequestVoteMessage:
@@ -207,26 +209,33 @@ func (r *Raft) handleAppendEntriesImpl(msg *AppendEntriesMessage) bool {
 	}
 
 	//2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
-	prevIdx := r.findLog(msg.prevLogTerm, msg.prevLogIndex)
-	if prevIdx == -1 {
+	containsPrevLog, prevIdx := r.containsLog(msg.prevLogTerm, msg.prevLogIndex)
+	if !containsPrevLog {
 		return false
 	}
 
+	replaceIdxStart := prevIdx + 1
+
 	for i, entry := range msg.entries {
-		if prevIdx+i < len(r.log) {
-			replaceLog := r.log[prevIdx+i]
+		if replaceIdxStart+i < len(r.log) {
+			//3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+			replaceLog := r.log[replaceIdxStart+i]
 			if replaceLog.index != entry.index {
 				log.Fatalf("Log Index Mismatch: %d & %d", replaceLog.index, entry.index)
 			}
-			replaceLog.term, replaceLog.data = entry.term, entry.data
+			if replaceLog.term == entry.term {
+				// normal case
+			} else {
+				replaceLog.term, replaceLog.data = entry.term, entry.data
+				r.log = r.log[0:replaceIdxStart + i + 1]
+			}
 		} else {
+			//4. Append any new entries not already in the log
 			r.log = append(r.log, entry)
 		}
 	}
-	//3. If an existing entry conflicts with a new one (same index
-	//but different terms), delete the existing entry and all that
-	//follow it (§5.3)
-	//4. Append any new entries not already in the log
+
+	log.Printf("%s LOG %d.%d", r, r.lastLogTerm(), r.lastLogIndex())
 	//5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if len(msg.entries) > 0 {
 		if msg.leaderCommit > r.commitIndex {
@@ -408,18 +417,30 @@ func (r *Raft) broadcastAppendEntries() {
 
 		logIndex := r.nextIndex[insID] // next index for the instance to receive
 		var entries []*Log
-		logidx := r.findLog(logIndex)
+		nextlogidx := r.locateLog(logIndex)
+		var prevLogTerm Term
+		var prevLogIndex LogIndex
+		if nextlogidx > 0 {
+			prevLogTerm = r.log[nextlogidx-1].term
+			prevLogIndex = r.log[nextlogidx-1].index
+		}
+
+		for i:= nextlogidx;i<len(r.log);i++ {
+			entries = append(entries, r.log[i])
+		}
+
+		//log.Printf("%s APPEND LOG %d ~ %d", r, nextlogidx, len(r.log)-1)
 
 		msg := &AppendEntriesMessage{
 			term:         r.currentTerm,
 			leaderId:     r.ID(),
-			prevLogTerm:  r.lastLogTerm(),
-			prevLogIndex: r.lastLogIndex(),
+			prevLogTerm:  prevLogTerm,
+			prevLogIndex: prevLogIndex,
 			leaderCommit: r.commitIndex,
-			entries:
+			entries: entries,
 		}
 
-		r.ins.Send(insID)
+		r.ins.Send(insID, msg)
 	}
 }
 
@@ -438,16 +459,33 @@ func (r *Raft) handleInputLog(data LogData) {
 	r.log = append(r.log, newlog)
 	log.Printf("%s LOG %d.%d", r, r.lastLogTerm(), r.lastLogIndex())
 }
-func (r *Raft) findLog(index LogIndex) int {
-	if index <= 0 {
-		return -1
+
+func (r *Raft) locateLog(index LogIndex) int {
+	r.validateLog()
+	return int(index)-1
+}
+
+func (r *Raft) containsLog(term Term, index LogIndex) (bool, int) {
+	idx := r.locateLog(index)
+	if idx == -1 {
+		return true, -1
+	} else if idx >= len(r.log) {
+		return false, idx
 	}
 
-	for i := len(r.log) - 1; i >= 0; i -= 1 {
-		if r.log[i].index == index {
-			return i
+	_log := r.log[idx]
+	if _log.index != index {
+		log.Fatalf("Should Equal")
+	}
+	return _log.term == term, idx
+}
+
+func (r *Raft) validateLog() {
+	prevLogIndex := LogIndex(0)
+	for _, _log :=range r.log {
+		if _log.index != prevLogIndex + 1 {
+			log.Fatalf("Invalid Log Index: %d, Should be %d", _log.index, prevLogIndex+1)
 		}
+		prevLogIndex = _log.index
 	}
-
-	return -1
 }
