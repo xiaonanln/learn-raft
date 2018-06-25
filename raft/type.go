@@ -2,12 +2,14 @@ package raft
 
 type Term int64
 type LogIndex int64
+type LogData []byte
 
 type RaftInstance interface {
 	ID() int
 	Recv() <-chan RPCMessage
 	Send(instanceID int, msg RPCMessage)
 	Broadcast(msg RPCMessage)
+	InputLog() <-chan LogData
 }
 
 type RPCMessage interface {

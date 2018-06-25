@@ -108,7 +108,8 @@ forloop:
 		case msg := <-r.ins.Recv():
 			log.Printf("%s received msg: %+v", r, msg)
 			r.handleMsg(msg)
-
+		case inputLog := <-r.ins.InputLog():
+			r.handleInputLog(inputLog)
 		case <-r.ctx.Done():
 			log.Printf("%s stopped.", r)
 			break forloop
@@ -344,4 +345,8 @@ func (r *Raft) broadcastAppendEntries() {
 		entries:      nil,
 	}
 	r.ins.Broadcast(msg)
+}
+
+func (r *Raft) handleInputLog(data LogData) {
+
 }
