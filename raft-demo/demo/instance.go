@@ -16,7 +16,7 @@ import (
 type DemoRaftInstance struct {
 	ctx          context.Context
 	id           int
-	recvChan     chan raft.RPCMessage
+	recvChan     chan raft.RecvRPCMessage
 	logInputChan chan raft.LogData
 }
 
@@ -31,7 +31,7 @@ func init() {
 
 func inputLogRoutine() {
 	for {
-		time.Sleep(time.Millisecond * 200)
+		time.Sleep(time.Millisecond * 100)
 		// choose a random instance to input
 
 		instancesLock.RLock()
@@ -55,7 +55,7 @@ func NewDemoRaftInstance(ctx context.Context, id int) *DemoRaftInstance {
 	ins := &DemoRaftInstance{
 		ctx:          ctx,
 		id:           id,
-		recvChan:     make(chan raft.RPCMessage, 1000),
+		recvChan:     make(chan raft.RecvRPCMessage, 1000),
 		logInputChan: make(chan raft.LogData, 10),
 	}
 
@@ -72,13 +72,13 @@ func (ins *DemoRaftInstance) ID() int {
 	return ins.id
 }
 
-func (ins *DemoRaftInstance) Recv() <-chan raft.RPCMessage {
+func (ins *DemoRaftInstance) Recv() <-chan raft.RecvRPCMessage {
 	return ins.recvChan
 }
 
 func (ins *DemoRaftInstance) Send(insID int, msg raft.RPCMessage) {
 	instancesLock.RLock()
-	instances[insID].recvChan <- msg
+	instances[insID].recvChan <- raft.RecvRPCMessage{ins.ID(), msg}
 	instancesLock.RUnlock()
 }
 
@@ -92,7 +92,7 @@ func (ins *DemoRaftInstance) Broadcast(msg raft.RPCMessage) {
 			continue
 		}
 
-		other.recvChan <- msg
+		other.recvChan <- raft.RecvRPCMessage{ins.ID(), msg}
 	}
 }
 

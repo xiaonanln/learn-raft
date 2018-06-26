@@ -104,6 +104,9 @@ forloop:
 	for {
 		select {
 		case <-ticker.C:
+			// If commitIndex > lastApplied: increment lastApplied, apply
+			// log[lastApplied] to state machine (§5.3)
+
 			switch r.mode {
 			case leaderMode:
 				r.leaderTick()
@@ -115,9 +118,9 @@ forloop:
 				log.Fatalf("invalid mode: %d", r.mode)
 			}
 
-		case msg := <-r.ins.Recv():
+		case recvMsg := <-r.ins.Recv():
 			//log.Printf("%s received msg: %+v", r, msg)
-			r.handleMsg(msg)
+			r.handleMsg(recvMsg.SenderID, recvMsg.Message)
 		case inputLog := <-r.ins.InputLog():
 			r.handleInputLog(inputLog)
 		case <-r.ctx.Done():
@@ -127,7 +130,7 @@ forloop:
 	}
 }
 
-func (r *Raft) handleMsg(_msg RPCMessage) {
+func (r *Raft) handleMsg(senderID int, _msg RPCMessage) {
 	//All Servers:
 	//?If RPC request or response contains Term T > currentTerm:
 	//set currentTerm = T, convert to follower (?.1)
@@ -138,7 +141,7 @@ func (r *Raft) handleMsg(_msg RPCMessage) {
 
 	switch msg := _msg.(type) {
 	case *AppendEntriesACKMessage:
-		//log.Printf("AppendEntries ACK: %+v", msg)
+		r.handleAppendEntriesACK(senderID, msg)
 	case *AppendEntriesMessage:
 		r.handleAppendEntries(msg)
 	case *RequestVoteMessage:
@@ -192,20 +195,56 @@ func (r *Raft) handleRequestVoteACKMessage(msg *RequestVoteACKMessage) {
 	}
 }
 
+func (r *Raft) handleAppendEntriesACK(senderID int, msg *AppendEntriesACKMessage) {
+	if r.mode != leaderMode {
+		// not leader anymore..
+		return
+	}
+
+	// assert msg.term <= r.currentTerm
+	if msg.success {
+		r.nextIndex[senderID] = msg.lastLogIndex + 1
+		if msg.lastLogIndex > r.matchIndex[senderID] {
+			r.matchIndex[senderID] = msg.lastLogIndex
+		}
+	} else {
+		// AppendEntries fail
+		// decrement nextIndex, but nextIndex should be at least 1
+		if r.nextIndex[senderID] > 1 {
+			r.nextIndex[senderID] -= 1
+		}
+	}
+}
+
 func (r *Raft) handleAppendEntries(msg *AppendEntriesMessage) {
 	r.resetElectionTimeout()
 	success := r.handleAppendEntriesImpl(msg)
+	lastLogIndex := LogIndex(0)
+	if success {
+		if len(msg.entries) > 0 {
+			lastLogIndex = msg.entries[len(msg.entries)-1].index
+		} else {
+			lastLogIndex = msg.prevLogIndex
+		}
+	}
+
 	r.ins.Send(msg.leaderId, &AppendEntriesACKMessage{
-		term:    r.currentTerm,
-		success: success,
+		term:         r.currentTerm,
+		success:      success,
+		lastLogIndex: lastLogIndex,
 	})
 
 }
 
 func (r *Raft) handleAppendEntriesImpl(msg *AppendEntriesMessage) bool {
 	//1. Reply false if term < currentTerm (§5.1)
+	// If this is the leader, then msg.term < r.currentTerm should always be satisfied, because Raft assures that msg.term != r.currentTer
 	if msg.term < r.currentTerm {
 		return false
+	}
+
+	if r.mode == leaderMode {
+		log.Fatalf("should not be leader")
 	}
 
 	//2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
@@ -227,7 +266,7 @@ func (r *Raft) handleAppendEntriesImpl(msg *AppendEntriesMessage) bool {
 				// normal case
 			} else {
 				replaceLog.term, replaceLog.data = entry.term, entry.data
-				r.log = r.log[0:replaceIdxStart + i + 1]
+				r.log = r.log[0 : replaceIdxStart+i+1]
 			}
 		} else {
 			//4. Append any new entries not already in the log
@@ -235,9 +274,9 @@ func (r *Raft) handleAppendEntriesImpl(msg *AppendEntriesMessage) bool {
 		}
 	}
 
-	log.Printf("%s LOG %d.%d", r, r.lastLogTerm(), r.lastLogIndex())
 	//5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if len(msg.entries) > 0 {
+		log.Printf("%s LOG %d.%d", r, r.lastLogTerm(), r.lastLogIndex())
 		if msg.leaderCommit > r.commitIndex {
 			commitIndex := msg.leaderCommit
 			if commitIndex > msg.entries[len(msg.entries)-1].index {
@@ -425,11 +464,13 @@ func (r *Raft) broadcastAppendEntries() {
 			prevLogIndex = r.log[nextlogidx-1].index
 		}
 
-		for i:= nextlogidx;i<len(r.log);i++ {
+		for i := nextlogidx; i < len(r.log); i++ {
 			entries = append(entries, r.log[i])
 		}
 
-		//log.Printf("%s APPEND LOG %d ~ %d", r, nextlogidx, len(r.log)-1)
+		if len(entries) > 0 {
+			log.Printf("%s APPEND %d LOG %d ~ %d", r, insID, nextlogidx, len(r.log)-1)
+		}
 
 		msg := &AppendEntriesMessage{
 			term:         r.currentTerm,
@@ -437,7 +478,7 @@ func (r *Raft) broadcastAppendEntries() {
 			prevLogTerm:  prevLogTerm,
 			prevLogIndex: prevLogIndex,
 			leaderCommit: r.commitIndex,
-			entries: entries,
+			entries:      entries,
 		}
 
 		r.ins.Send(insID, msg)
@@ -462,7 +503,7 @@ func (r *Raft) handleInputLog(data LogData) {
 
 func (r *Raft) locateLog(index LogIndex) int {
 	r.validateLog()
-	return int(index)-1
+	return int(index) - 1
 }
 
 func (r *Raft) containsLog(term Term, index LogIndex) (bool, int) {
@@ -482,8 +523,8 @@ func (r *Raft) containsLog(term Term, index LogIndex) (bool, int) {
 
 func (r *Raft) validateLog() {
 	prevLogIndex := LogIndex(0)
-	for _, _log :=range r.log {
-		if _log.index != prevLogIndex + 1 {
+	for _, _log := range r.log {
+		if _log.index != prevLogIndex+1 {
 			log.Fatalf("Invalid Log Index: %d, Should be %d", _log.index, prevLogIndex+1)
 		}
 		prevLogIndex = _log.index

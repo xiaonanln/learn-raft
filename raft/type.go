@@ -9,6 +9,11 @@ type Term int64
 type LogIndex int64
 type LogData []byte
 
+type RecvRPCMessage struct {
+	SenderID int
+	Message  RPCMessage
+}
+
 func (d LogData) String() string {
 	var sb strings.Builder
 	sb.WriteByte('[')
@@ -24,7 +29,7 @@ func (d LogData) String() string {
 
 type RaftInstance interface {
 	ID() int
-	Recv() <-chan RPCMessage
+	Recv() <-chan RecvRPCMessage
 	Send(instanceID int, msg RPCMessage)
 	Broadcast(msg RPCMessage)
 	InputLog() <-chan LogData
@@ -56,6 +61,8 @@ func (m *AppendEntriesMessage) Term() Term {
 type AppendEntriesACKMessage struct {
 	term    Term
 	success bool
+	// last log index of the AppendEntries message when success, equals to prevLogIndex if entries is empty
+	lastLogIndex LogIndex
 }
 
 func (m *AppendEntriesACKMessage) Term() Term {
