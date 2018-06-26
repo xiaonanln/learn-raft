@@ -1,5 +1,7 @@
 package raft
 
+// Read raft paper at https://raft.github.io/raft.pdf
+
 import (
 	"context"
 	"fmt"
@@ -218,15 +220,7 @@ func (r *Raft) handleAppendEntriesACK(senderID int, msg *AppendEntriesACKMessage
 
 func (r *Raft) handleAppendEntries(msg *AppendEntriesMessage) {
 	r.resetElectionTimeout()
-	success := r.handleAppendEntriesImpl(msg)
-	lastLogIndex := LogIndex(0)
-	if success {
-		if len(msg.entries) > 0 {
-			lastLogIndex = msg.entries[len(msg.entries)-1].index
-		} else {
-			lastLogIndex = msg.prevLogIndex
-		}
-	}
+	success, lastLogIndex := r.handleAppendEntriesImpl(msg)
 
 	r.ins.Send(msg.leaderId, &AppendEntriesACKMessage{
 		term:         r.currentTerm,
@@ -236,11 +230,11 @@ func (r *Raft) handleAppendEntries(msg *AppendEntriesMessage) {
 
 }
 
-func (r *Raft) handleAppendEntriesImpl(msg *AppendEntriesMessage) bool {
+func (r *Raft) handleAppendEntriesImpl(msg *AppendEntriesMessage) (bool, LogIndex) {
 	//1. Reply false if term < currentTerm (§5.1)
 	// If this is the leader, then msg.term < r.currentTerm should always be satisfied, because Raft assures that msg.term != r.currentTer
 	if msg.term < r.currentTerm {
-		return false
+		return false, 0
 	}
 
 	if r.mode == leaderMode {
@@ -250,7 +244,7 @@ func (r *Raft) handleAppendEntriesImpl(msg *AppendEntriesMessage) bool {
 	//2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
 	containsPrevLog, prevIdx := r.containsLog(msg.prevLogTerm, msg.prevLogIndex)
 	if !containsPrevLog {
-		return false
+		return false, 0
 	}
 
 	replaceIdxStart := prevIdx + 1
@@ -274,22 +268,32 @@ func (r *Raft) handleAppendEntriesImpl(msg *AppendEntriesMessage) bool {
 		}
 	}
 
-	//5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	var lastLogTerm Term
+	var lastLogIndex LogIndex
 	if len(msg.entries) > 0 {
-		log.Printf("%s LOG %d.%d", r, r.lastLogTerm(), r.lastLogIndex())
-		if msg.leaderCommit > r.commitIndex {
-			commitIndex := msg.leaderCommit
-			if commitIndex > msg.entries[len(msg.entries)-1].index {
-				commitIndex = msg.entries[len(msg.entries)-1].index
-			}
-			if commitIndex < r.commitIndex {
-				log.Fatalf("New Commit Index Is %d, But Current Commit Index Is %d", commitIndex, r.commitIndex)
-			}
+		lastLogTerm = msg.entries[len(msg.entries)-1].term
+		lastLogIndex = msg.entries[len(msg.entries)-1].index
+	} else {
+		lastLogTerm = msg.prevLogTerm
+		lastLogIndex = msg.prevLogIndex
+	}
+	//5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	log.Printf("%s LOG %d.%d", r, lastLogTerm, lastLogIndex)
+	if msg.leaderCommit > r.commitIndex {
+		commitIndex := msg.leaderCommit
+		if commitIndex > lastLogIndex {
+			commitIndex = lastLogIndex
+		}
+		if commitIndex < r.commitIndex {
+			log.Fatalf("New Commit Index Is %d, But Current Commit Index Is %d", commitIndex, r.commitIndex)
+		}
+		if commitIndex > r.commitIndex {
 			r.commitIndex = commitIndex
+			log.Printf("%s COMMITS %d", r, r.commitIndex)
 		}
 	}
 
-	return true
+	return true, lastLogIndex
 }
 
 // isLogUpToDate determines if the log of specified Term and index is at least as up-to-date as r.log
@@ -329,6 +333,8 @@ func (r *Raft) candidateTick() {
 }
 
 func (r *Raft) leaderTick() {
+	r.tryCommitLogs()
+
 	now := time.Now()
 	if now.Sub(r.lastAppendEntriesRPCTime) >= leaderAppendEntriesRPCInterval {
 		// time to broadcast AppendEntriesRPC
@@ -528,5 +534,30 @@ func (r *Raft) validateLog() {
 			log.Fatalf("Invalid Log Index: %d, Should be %d", _log.index, prevLogIndex+1)
 		}
 		prevLogIndex = _log.index
+	}
+}
+func (r *Raft) tryCommitLogs() {
+	//If there exists an N such that N > commitIndex, a majority
+	//of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+	//set commitIndex = N (§5.3, §5.4).
+	for idx := len(r.log) - 1; idx >= 0; idx-- {
+		_log := r.log[idx]
+		if _log.index <= r.commitIndex || _log.term != r.currentTerm {
+			// nothing to commit
+			break
+		}
+		// _log.index > r.commitIndex && _log.term == r.currentTerm, check if we can commit this _log
+		commitCount := 1
+		for id, matchIndx := range r.matchIndex {
+			if id != r.ID() && matchIndx >= _log.index {
+				commitCount += 1
+			}
+		}
+		if commitCount >= r.instanceNum/2+1 {
+			// commited
+			r.commitIndex = _log.index
+			log.Printf("%s COMMITS %d", r, r.commitIndex)
+			break
+		}
 	}
 }
